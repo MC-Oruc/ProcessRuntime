@@ -13,3 +13,4 @@ Reusable Unreal Engine runtime process ownership and monitoring plugin.
 
 The plugin deliberately has no knowledge of HTTP, ports, text generation, models, or llama.cpp.
 
+`UProcessRuntimeSubsystem` is engine-scoped, so an owned process can survive PIE world/GameInstance recreation. It terminates only processes created under its own `FManagedProcessId`; a foreign process occupying the same port is never killed. Win64 Job Object assignment can be denied by a host job policy; that condition is logged and normal `FMonitoredProcess::Cancel(true)` tree termination remains available.

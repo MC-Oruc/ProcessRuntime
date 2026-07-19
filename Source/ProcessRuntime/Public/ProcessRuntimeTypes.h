@@ -27,6 +27,7 @@ struct PROCESSRUNTIME_API FManagedProcessId
 
     bool IsValid() const { return !Value.IsNone(); }
     bool operator==(const FManagedProcessId& Other) const { return Value == Other.Value; }
+    bool operator!=(const FManagedProcessId& Other) const { return !(*this == Other); }
 };
 
 FORCEINLINE uint32 GetTypeHash(const FManagedProcessId& Id)
@@ -86,4 +87,3 @@ struct PROCESSRUNTIME_API FManagedProcessStatus
 
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnManagedProcessStateChanged, const FManagedProcessId&, const FManagedProcessStatus&);
 DECLARE_MULTICAST_DELEGATE_TwoParams(FOnManagedProcessOutput, const FManagedProcessId&, const FString&);
-
