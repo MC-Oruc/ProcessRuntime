@@ -1,0 +1,20 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "Process Runtime",
+  "Description": "Generic owned-process lifecycle and monitoring for Unreal Engine runtime applications.",
+  "Category": "Runtime",
+  "CreatedBy": "MC-Oruc",
+  "CanContainContent": false,
+  "IsBetaVersion": false,
+  "Installed": false,
+  "Modules": [
+    {
+      "Name": "ProcessRuntime",
+      "Type": "Runtime",
+      "LoadingPhase": "PreDefault"
+    }
+  ]
+}
+
