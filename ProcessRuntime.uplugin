@@ -6,6 +6,10 @@
   "Description": "Generic owned-process lifecycle and monitoring for Unreal Engine runtime applications.",
   "Category": "Runtime",
   "CreatedBy": "MC-Oruc",
+  "CreatedByURL": "https://github.com/MC-Oruc",
+  "DocsURL": "https://github.com/MC-Oruc/ProcessRuntime",
+  "SupportURL": "https://github.com/MC-Oruc/ProcessRuntime/issues",
+  "EngineVersion": "5.7.0",
   "CanContainContent": false,
   "IsBetaVersion": false,
   "Installed": false,
@@ -17,4 +21,3 @@
     }
   ]
 }
-

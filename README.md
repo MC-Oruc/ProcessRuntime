@@ -1,6 +1,19 @@
 # ProcessRuntime
 
+[![Unreal Engine 5.7](https://img.shields.io/badge/Unreal%20Engine-5.7-blue.svg)](https://www.unrealengine.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 Reusable Unreal Engine runtime process ownership and monitoring plugin.
+
+## Installation
+
+Add the plugin as a project submodule, then enable `ProcessRuntime` in the
+project descriptor and build the Editor target:
+
+```powershell
+git submodule add https://github.com/MC-Oruc/ProcessRuntime.git Plugins/ProcessRuntime
+git submodule update --init --recursive
+```
 
 ## Responsibilities
 
