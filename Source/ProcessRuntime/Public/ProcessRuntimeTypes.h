@@ -14,6 +14,16 @@ enum class EManagedProcessState : uint8
     Failed
 };
 
+UENUM(BlueprintType)
+enum class EManagedProcessPriority : uint8
+{
+    Idle,
+    BelowNormal,
+    Normal,
+    AboveNormal,
+    High
+};
+
 USTRUCT(BlueprintType)
 struct PROCESSRUNTIME_API FManagedProcessId
 {
@@ -55,6 +65,9 @@ struct PROCESSRUNTIME_API FManagedProcessSpec
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ProcessRuntime")
     bool bCaptureOutput = true;
 
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ProcessRuntime")
+    EManagedProcessPriority Priority = EManagedProcessPriority::Normal;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "ProcessRuntime", meta = (ClampMin = "1", ClampMax = "10000"))
     int32 MaxRecentOutputLines = 200;
 };
@@ -78,6 +91,9 @@ struct PROCESSRUNTIME_API FManagedProcessStatus
 
     UPROPERTY(BlueprintReadOnly, Category = "ProcessRuntime")
     FDateTime StartedAtUtc;
+
+    UPROPERTY(BlueprintReadOnly, Category = "ProcessRuntime")
+    EManagedProcessPriority Priority = EManagedProcessPriority::Normal;
 
     bool IsActive() const
     {

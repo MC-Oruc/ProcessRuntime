@@ -16,6 +16,7 @@ public:
     bool StartProcess(const FManagedProcessId& ProcessId, const FManagedProcessSpec& Spec, FString& OutError);
     bool StopProcess(const FManagedProcessId& ProcessId, FString& OutError);
     bool RestartProcess(const FManagedProcessId& ProcessId, const FManagedProcessSpec& Spec, FString& OutError);
+    bool SetPriority(const FManagedProcessId& ProcessId, EManagedProcessPriority Priority, FString& OutError);
     bool GetStatus(const FManagedProcessId& ProcessId, FManagedProcessStatus& OutStatus) const;
     bool IsOwnedProcess(const FManagedProcessId& ProcessId) const;
 
@@ -25,15 +26,17 @@ public:
 private:
     struct FManagedProcessRecord;
 
-    void HandleOutputOnGameThread(FName ProcessName, FString Output);
-    void HandleCompletedOnGameThread(FName ProcessName, int32 ExitCode);
-    void HandleCanceledOnGameThread(FName ProcessName);
+    void HandleOutputOnGameThread(FName ProcessName, uint64 Generation, FString Output);
+    void HandleCompletedOnGameThread(FName ProcessName, uint64 Generation, int32 ExitCode);
+    void HandleCanceledOnGameThread(FName ProcessName, uint64 Generation);
     void BroadcastStatus(FName ProcessName, const FManagedProcessRecord& Record);
     void ReleaseRecordProcess(FManagedProcessRecord& Record);
     bool AssignWin64JobObject(FManagedProcessRecord& Record, FString& OutWarning);
+    bool ApplyWin64JobPriority(FManagedProcessRecord& Record, EManagedProcessPriority Priority, FString& OutError);
 
     TMap<FName, TSharedPtr<FManagedProcessRecord>> Processes;
     FOnManagedProcessStateChanged ProcessStateChanged;
     FOnManagedProcessOutput ProcessOutput;
+    uint64 NextGeneration = 1;
     bool bDeinitializing = false;
 };

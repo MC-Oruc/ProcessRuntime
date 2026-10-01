@@ -13,6 +13,24 @@
 #include "Windows/HideWindowsPlatformTypes.h"
 #endif
 
+namespace
+{
+#if PLATFORM_WINDOWS
+DWORD ToWin64PriorityClass(const EManagedProcessPriority Priority)
+{
+    switch (Priority)
+    {
+    case EManagedProcessPriority::Idle: return IDLE_PRIORITY_CLASS;
+    case EManagedProcessPriority::BelowNormal: return BELOW_NORMAL_PRIORITY_CLASS;
+    case EManagedProcessPriority::AboveNormal: return ABOVE_NORMAL_PRIORITY_CLASS;
+    case EManagedProcessPriority::High: return HIGH_PRIORITY_CLASS;
+    case EManagedProcessPriority::Normal:
+    default: return NORMAL_PRIORITY_CLASS;
+    }
+}
+#endif
+}
+
 struct UProcessRuntimeSubsystem::FManagedProcessRecord
 {
     FManagedProcessSpec Spec;
@@ -20,6 +38,7 @@ struct UProcessRuntimeSubsystem::FManagedProcessRecord
     TUniquePtr<FMonitoredProcess> Process;
     TOptional<FManagedProcessSpec> PendingRestartSpec;
     void* JobHandle = nullptr;
+    uint64 Generation = 0;
     bool bExpectedStop = false;
 };
 
@@ -88,8 +107,11 @@ bool UProcessRuntimeSubsystem::StartProcess(const FManagedProcessId& ProcessId, 
         : FPaths::ConvertRelativePathToFull(Spec.WorkingDirectory);
     Record->Status.State = EManagedProcessState::Starting;
     Record->Status.StartedAtUtc = FDateTime::UtcNow();
+    Record->Status.Priority = Record->Spec.Priority;
+    Record->Generation = NextGeneration++;
 
     const FName ProcessName = ProcessId.Value;
+    const uint64 Generation = Record->Generation;
     TWeakObjectPtr<UProcessRuntimeSubsystem> WeakThis(this);
     Record->Process = MakeUnique<FMonitoredProcess>(
         Record->Spec.ExecutablePath,
@@ -98,33 +120,33 @@ bool UProcessRuntimeSubsystem::StartProcess(const FManagedProcessId& ProcessId, 
         Record->Spec.bHidden,
         Record->Spec.bCaptureOutput);
     Record->Process->SetSleepInterval(0.05f);
-    Record->Process->OnOutput().BindLambda([WeakThis, ProcessName](FString Output)
+    Record->Process->OnOutput().BindLambda([WeakThis, ProcessName, Generation](FString Output)
     {
-        AsyncTask(ENamedThreads::GameThread, [WeakThis, ProcessName, Output = MoveTemp(Output)]() mutable
+        AsyncTask(ENamedThreads::GameThread, [WeakThis, ProcessName, Generation, Output = MoveTemp(Output)]() mutable
         {
             if (WeakThis.IsValid())
             {
-                WeakThis->HandleOutputOnGameThread(ProcessName, MoveTemp(Output));
+                WeakThis->HandleOutputOnGameThread(ProcessName, Generation, MoveTemp(Output));
             }
         });
     });
-    Record->Process->OnCompleted().BindLambda([WeakThis, ProcessName](const int32 ExitCode)
+    Record->Process->OnCompleted().BindLambda([WeakThis, ProcessName, Generation](const int32 ExitCode)
     {
-        AsyncTask(ENamedThreads::GameThread, [WeakThis, ProcessName, ExitCode]()
+        AsyncTask(ENamedThreads::GameThread, [WeakThis, ProcessName, Generation, ExitCode]()
         {
             if (WeakThis.IsValid())
             {
-                WeakThis->HandleCompletedOnGameThread(ProcessName, ExitCode);
+                WeakThis->HandleCompletedOnGameThread(ProcessName, Generation, ExitCode);
             }
         });
     });
-    Record->Process->OnCanceled().BindLambda([WeakThis, ProcessName]()
+    Record->Process->OnCanceled().BindLambda([WeakThis, ProcessName, Generation]()
     {
-        AsyncTask(ENamedThreads::GameThread, [WeakThis, ProcessName]()
+        AsyncTask(ENamedThreads::GameThread, [WeakThis, ProcessName, Generation]()
         {
             if (WeakThis.IsValid())
             {
-                WeakThis->HandleCanceledOnGameThread(ProcessName);
+                WeakThis->HandleCanceledOnGameThread(ProcessName, Generation);
             }
         });
     });
@@ -163,14 +185,51 @@ bool UProcessRuntimeSubsystem::StopProcess(const FManagedProcessId& ProcessId, F
     TSharedPtr<FManagedProcessRecord>* Found = Processes.Find(ProcessId.Value);
     if (!Found || !(*Found)->Process || !(*Found)->Status.IsActive())
     {
+        return true;
+    }
+
+    FManagedProcessRecord& Record = **Found;
+    if (Record.Status.State == EManagedProcessState::Stopping)
+    {
+        return true;
+    }
+    Record.bExpectedStop = true;
+    Record.Status.State = EManagedProcessState::Stopping;
+    Record.Process->Cancel(true);
+    BroadcastStatus(ProcessId.Value, Record);
+    return true;
+}
+
+bool UProcessRuntimeSubsystem::SetPriority(
+    const FManagedProcessId& ProcessId,
+    const EManagedProcessPriority Priority,
+    FString& OutError)
+{
+    check(IsInGameThread());
+    OutError.Reset();
+
+    TSharedPtr<FManagedProcessRecord>* Found = Processes.Find(ProcessId.Value);
+    if (!Found || !(*Found)->Process || !(*Found)->Status.IsActive())
+    {
         OutError = FString::Printf(TEXT("Owned process '%s' is not active."), *ProcessId.Value.ToString());
         return false;
     }
 
     FManagedProcessRecord& Record = **Found;
-    Record.bExpectedStop = true;
-    Record.Status.State = EManagedProcessState::Stopping;
-    Record.Process->Cancel(true);
+    if (Record.Status.Priority == Priority)
+    {
+        return true;
+    }
+
+    if (!ApplyWin64JobPriority(Record, Priority, OutError))
+    {
+        return false;
+    }
+
+    Record.Spec.Priority = Priority;
+    Record.Status.Priority = Priority;
+    UE_LOG(LogProcessRuntime, Verbose, TEXT("Changed owned process '%s' priority to %d."),
+        *ProcessId.Value.ToString(), static_cast<int32>(Priority));
     BroadcastStatus(ProcessId.Value, Record);
     return true;
 }
@@ -205,11 +264,11 @@ bool UProcessRuntimeSubsystem::IsOwnedProcess(const FManagedProcessId& ProcessId
     return Processes.Contains(ProcessId.Value);
 }
 
-void UProcessRuntimeSubsystem::HandleOutputOnGameThread(const FName ProcessName, FString Output)
+void UProcessRuntimeSubsystem::HandleOutputOnGameThread(const FName ProcessName, const uint64 Generation, FString Output)
 {
     check(IsInGameThread());
     TSharedPtr<FManagedProcessRecord>* Found = Processes.Find(ProcessName);
-    if (!Found)
+    if (!Found || (*Found)->Generation != Generation)
     {
         return;
     }
@@ -231,11 +290,11 @@ void UProcessRuntimeSubsystem::HandleOutputOnGameThread(const FName ProcessName,
     ProcessOutput.Broadcast(FManagedProcessId(ProcessName), Output);
 }
 
-void UProcessRuntimeSubsystem::HandleCompletedOnGameThread(const FName ProcessName, const int32 ExitCode)
+void UProcessRuntimeSubsystem::HandleCompletedOnGameThread(const FName ProcessName, const uint64 Generation, const int32 ExitCode)
 {
     check(IsInGameThread());
     TSharedPtr<FManagedProcessRecord>* Found = Processes.Find(ProcessName);
-    if (!Found)
+    if (!Found || (*Found)->Generation != Generation)
     {
         return;
     }
@@ -259,11 +318,11 @@ void UProcessRuntimeSubsystem::HandleCompletedOnGameThread(const FName ProcessNa
     }
 }
 
-void UProcessRuntimeSubsystem::HandleCanceledOnGameThread(const FName ProcessName)
+void UProcessRuntimeSubsystem::HandleCanceledOnGameThread(const FName ProcessName, const uint64 Generation)
 {
     check(IsInGameThread());
     TSharedPtr<FManagedProcessRecord>* Found = Processes.Find(ProcessName);
-    if (!Found)
+    if (!Found || (*Found)->Generation != Generation)
     {
         return;
     }
@@ -320,7 +379,8 @@ bool UProcessRuntimeSubsystem::AssignWin64JobObject(FManagedProcessRecord& Recor
     }
 
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION Limits = {};
-    Limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    Limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PRIORITY_CLASS;
+    Limits.BasicLimitInformation.PriorityClass = ToWin64PriorityClass(Record.Spec.Priority);
     if (!SetInformationJobObject(JobHandle, JobObjectExtendedLimitInformation, &Limits, sizeof(Limits)))
     {
         CloseHandle(JobHandle);
@@ -339,4 +399,36 @@ bool UProcessRuntimeSubsystem::AssignWin64JobObject(FManagedProcessRecord& Recor
     Record.JobHandle = JobHandle;
 #endif
     return true;
+}
+
+bool UProcessRuntimeSubsystem::ApplyWin64JobPriority(
+    FManagedProcessRecord& Record,
+    const EManagedProcessPriority Priority,
+    FString& OutError)
+{
+    OutError.Reset();
+#if PLATFORM_WINDOWS
+    if (!Record.JobHandle)
+    {
+        OutError = TEXT("Cannot change process priority because the Job Object is unavailable.");
+        return false;
+    }
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION Limits = {};
+    Limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PRIORITY_CLASS;
+    Limits.BasicLimitInformation.PriorityClass = ToWin64PriorityClass(Priority);
+    if (!SetInformationJobObject(
+        static_cast<HANDLE>(Record.JobHandle),
+        JobObjectExtendedLimitInformation,
+        &Limits,
+        sizeof(Limits)))
+    {
+        OutError = FString::Printf(TEXT("SetInformationJobObject failed with Win32 error %lu."), GetLastError());
+        return false;
+    }
+    return true;
+#else
+    OutError = TEXT("Managed process priority changes are currently supported on Windows only.");
+    return false;
+#endif
 }

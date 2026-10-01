@@ -30,7 +30,44 @@ bool FProcessRuntimeSpecDefaultsTest::RunTest(const FString& Parameters)
     const FManagedProcessSpec Spec;
     TestTrue(TEXT("Processes are hidden by default"), Spec.bHidden);
     TestTrue(TEXT("Output capture is enabled by default"), Spec.bCaptureOutput);
+    TestEqual(TEXT("Processes use normal priority by default"), Spec.Priority, EManagedProcessPriority::Normal);
     TestEqual(TEXT("Recent output is bounded to 200 lines"), Spec.MaxRecentOutputLines, 200);
+    return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+    FProcessRuntimePriorityTest,
+    "ProcessRuntime.Runtime.Priority",
+    EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FProcessRuntimePriorityTest::RunTest(const FString& Parameters)
+{
+#if PLATFORM_WINDOWS
+    UProcessRuntimeSubsystem* Runtime = GEngine ? GEngine->GetEngineSubsystem<UProcessRuntimeSubsystem>() : nullptr;
+    TestNotNull(TEXT("ProcessRuntime subsystem exists"), Runtime);
+    if (!Runtime) return false;
+
+    FManagedProcessSpec Spec;
+    Spec.ExecutablePath = FPlatformMisc::GetEnvironmentVariable(TEXT("ComSpec"));
+    Spec.Arguments = TEXT("/C \"ping -n 5 127.0.0.1 >nul\"");
+    Spec.bCaptureOutput = false;
+    Spec.Priority = EManagedProcessPriority::BelowNormal;
+    const FManagedProcessId ProcessId(*FString::Printf(TEXT("Test.Priority.%llu"), FPlatformTime::Cycles64()));
+    FString Error;
+    if (!TestTrue(TEXT("Priority test process launches"), Runtime->StartProcess(ProcessId, Spec, Error)))
+    {
+        AddError(Error);
+        return false;
+    }
+
+    FManagedProcessStatus Status;
+    TestTrue(TEXT("Priority status is available"), Runtime->GetStatus(ProcessId, Status));
+    TestEqual(TEXT("Initial priority is below normal"), Status.Priority, EManagedProcessPriority::BelowNormal);
+    TestTrue(TEXT("Active process priority changes"), Runtime->SetPriority(ProcessId, EManagedProcessPriority::AboveNormal, Error));
+    TestTrue(TEXT("Updated priority status is available"), Runtime->GetStatus(ProcessId, Status));
+    TestEqual(TEXT("Updated priority is above normal"), Status.Priority, EManagedProcessPriority::AboveNormal);
+    TestTrue(TEXT("Priority test process stops"), Runtime->StopProcess(ProcessId, Error));
+#endif
     return true;
 }
 
@@ -86,6 +123,26 @@ bool FWaitForManagedProcessOutput::Update()
     return false;
 }
 
+DEFINE_LATENT_AUTOMATION_COMMAND_TWO_PARAMETER(
+    FVerifyIdempotentManagedProcessStop,
+    FAutomationTestBase*, Test,
+    FManagedProcessId, ProcessId);
+
+bool FVerifyIdempotentManagedProcessStop::Update()
+{
+    UProcessRuntimeSubsystem* Runtime = GEngine ? GEngine->GetEngineSubsystem<UProcessRuntimeSubsystem>() : nullptr;
+    if (!Runtime)
+    {
+        Test->AddError(TEXT("ProcessRuntime subsystem disappeared."));
+        return true;
+    }
+    FString Error;
+    Test->TestTrue(TEXT("Stopping an exited process succeeds"), Runtime->StopProcess(ProcessId, Error));
+    Error.Reset();
+    Test->TestTrue(TEXT("Repeated stop remains idempotent"), Runtime->StopProcess(ProcessId, Error));
+    return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FProcessRuntimeOutputAndCompletionTest,
     "ProcessRuntime.Runtime.OutputAndCompletion",
@@ -109,6 +166,7 @@ bool FProcessRuntimeOutputAndCompletionTest::RunTest(const FString& Parameters)
         return false;
     }
     ADD_LATENT_AUTOMATION_COMMAND(FWaitForManagedProcessOutput(this, ProcessId, FPlatformTime::Seconds() + 10.0));
+    ADD_LATENT_AUTOMATION_COMMAND(FVerifyIdempotentManagedProcessStop(this, ProcessId));
 #endif
     return true;
 }
